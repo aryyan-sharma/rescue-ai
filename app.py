@@ -1,4 +1,5 @@
 import io
+import html
 import re
 import math
 import difflib
@@ -10,9 +11,42 @@ import pandas as pd
 from PIL import Image
 from streamlit_mic_recorder import speech_to_text
 
-st.set_page_config(page_title="RescueAI", layout="wide")
-st.title("RescueAI")
-st.caption("Flood rescue coordination | sample demo data")
+st.set_page_config(page_title="RescueAI", layout="wide", initial_sidebar_state="expanded")
+
+st.markdown("""
+<style>
+.stApp { background: #e8edf5; }
+[data-testid="stHeader"] { background: transparent; }
+.block-container { padding-top: 1.6rem; max-width: 1400px; }
+section[data-testid="stSidebar"] { background: #f3f6fb; border-right: 1px solid #dbe3f0; }
+.logo { font-size: 1.7rem; font-weight: 800; color: #12284c; letter-spacing: -0.5px; }
+.logo span { color: #e63946; }
+.logo-sub { color: #6b7a99; font-size: 0.8rem; margin-bottom: 1rem; }
+.page-title { font-size: 2rem; font-weight: 700; color: #12284c; }
+div[class*="st-key-card"] {
+    background: #f4f7fc; border: none !important; border-radius: 18px;
+    box-shadow: 7px 7px 16px #cdd5e4, -7px -7px 16px #ffffff;
+}
+.card-title { font-weight: 700; color: #12284c; font-size: 1.05rem; margin-bottom: 0.4rem; }
+.kpi { background: #f4f7fc; border-radius: 18px; padding: 16px 20px;
+       box-shadow: 7px 7px 16px #cdd5e4, -7px -7px 16px #ffffff; }
+.kpi-label { color: #6b7a99; font-size: 0.85rem; font-weight: 600; }
+.kpi-value { font-size: 2rem; font-weight: 800; line-height: 1.2; }
+.kpi-sub { color: #8a97b2; font-size: 0.75rem; }
+.item { background: #ffffff; border-radius: 12px; padding: 8px 12px; margin-bottom: 8px;
+        box-shadow: 2px 2px 6px #dde3ef; }
+.item-title { font-weight: 700; color: #12284c; font-size: 0.9rem; }
+.item-sub { color: #6b7a99; font-size: 0.8rem; }
+.pill { color: #fff; border-radius: 999px; padding: 1px 9px; font-size: 0.75rem; margin-left: 6px; }
+.st-key-nav label[data-testid="stRadioOption"] { width: 100%; padding: 9px 14px; border-radius: 12px; }
+.st-key-nav label[data-testid="stRadioOption"] > div > div:first-child { display: none; }
+.st-key-nav label[data-testid="stRadioOption"][data-selected="true"] {
+    background: #ffffff; box-shadow: 3px 3px 8px #d3dae8; }
+.st-key-nav label[data-testid="stRadioOption"][data-selected="true"] p { font-weight: 700; color: #2f5bea; }
+.st-key-open_form button { background: #e63946; border: none; color: #fff; font-weight: 700; border-radius: 12px; }
+.st-key-open_form button:hover { background: #cf2f3c; color: #fff; }
+</style>
+""", unsafe_allow_html=True)
 
 CITIES = {
     "Ludhiana": (30.9010, 75.8573),
@@ -310,111 +344,230 @@ if "requests" not in st.session_state:
         ("Sample street 5", "Road blocked, no danger", 15, False),
     ])
 
-st.session_state.setdefault("need", "Water entering house")
+st.session_state.setdefault("need", "")
 st.session_state.setdefault("people", 3)
 st.session_state.setdefault("elderly", False)
 st.session_state.setdefault("children", False)
 st.session_state.setdefault("medical", False)
 st.session_state.setdefault("water", "Ankle level")
+st.session_state.setdefault("hours", 1)
 st.session_state.setdefault("heard", "")
+st.session_state.setdefault("show_form", False)
+st.session_state.setdefault("photo_n", 0)
+st.session_state.setdefault("msg", "")
+
+
+def open_form():
+    st.session_state.show_form = True
+
+
+def close_form():
+    st.session_state.show_form = False
+
+
+def submit_request():
+    s = st.session_state
+    area_now = s["area"]
+    place_now = s[f"place_{area_now}"]
+    lat0, lon0 = AREAS[area_now][place_now]
+    photo = analyze_photo(s.get(f"photo_{s.photo_n}"))
+    score, why = calc_score(s["people"], s["elderly"], s["children"], s["medical"], s["water"], s["hours"])
+    trust, flags = calc_trust(place_now, s["need"], photo, s.requests)
+    s.requests.append(
+        {"area": area_now, "lat": lat0, "lon": lon0, "place": place_now, "need": s["need"], "score": score,
+         "why": why, "trust": trust, "flags": flags, "bits": photo["bits"] if photo else None,
+         "medical": s["medical"]}
+    )
+    s.msg = f"Request added for {place_now}. Priority score: {score} | Trust: {trust}"
+    s["need"] = ""
+    s["people"] = 3
+    s["elderly"] = False
+    s["children"] = False
+    s["medical"] = False
+    s["water"] = "Ankle level"
+    s["hours"] = 1
+    s["heard"] = ""
+    s.photo_n += 1
+    s.show_form = False
+
+
+PAGES = ["Dashboard", "Control room", "Risk zones", "All requests"]
 
 with st.sidebar:
-    st.header("Voice SOS")
-    lang_name = st.selectbox("Speak in", list(LANGS.keys()))
-    spoken = speech_to_text(
-        start_prompt="Start speaking", stop_prompt="Stop", just_once=True,
-        language=LANGS[lang_name], key="stt",
-    )
-    if spoken:
-        d = extract_details(spoken)
-        st.session_state["need"] = spoken
-        st.session_state["heard"] = spoken
-        if d["people"]:
-            st.session_state["people"] = d["people"]
-        if d["elderly"]:
-            st.session_state["elderly"] = True
-        if d["children"]:
-            st.session_state["children"] = True
-        if d["medical"]:
-            st.session_state["medical"] = True
-        if d["water"]:
-            st.session_state["water"] = d["water"]
-    if st.session_state["heard"]:
-        st.caption(f"Heard: {st.session_state['heard']}")
+    st.markdown('<div class="logo">Rescue<span>AI</span></div>'
+                '<div class="logo-sub">Flood rescue coordination</div>', unsafe_allow_html=True)
+    page = st.radio("Menu", PAGES, key="nav", label_visibility="collapsed")
     st.divider()
-    st.header("New help request")
     area = st.radio("Map area", list(AREAS.keys()), key="area")
-    LOCATIONS = AREAS[area]
-    place = st.selectbox("Location", list(LOCATIONS.keys()))
-    need = st.text_area("What is happening?", key="need")
-    uploaded = st.file_uploader("Attach a photo (optional)", type=["jpg", "jpeg", "png"])
-    if uploaded is not None:
-        st.image(uploaded, caption="Attached photo", width=200)
-    people = st.number_input("People in danger", 1, 50, key="people")
-    elderly = st.checkbox("Elderly present", key="elderly")
-    children = st.checkbox("Children present", key="children")
-    medical = st.checkbox("Medical emergency", key="medical")
-    water = st.selectbox("Water level", list(WATER_POINTS.keys()), key="water")
-    hours = st.slider("Waiting for help (hours)", 0, 24, 1)
-    if st.button("Submit request", key="submit"):
-        score, why = calc_score(people, elderly, children, medical, water, hours)
-        photo = analyze_photo(uploaded)
-        trust, flags = calc_trust(place, need, photo, st.session_state.requests)
-        lat0, lon0 = LOCATIONS[place]
-        st.session_state.requests.append(
-            {"area": area, "lat": lat0, "lon": lon0, "place": place, "need": need, "score": score, "why": why, "trust": trust,
-             "flags": flags, "bits": photo["bits"] if photo else None, "medical": medical}
+    st.caption("Sample demo data")
+
+head_left, head_right = st.columns([5, 1])
+head_left.markdown(f'<div class="page-title">{page}</div>', unsafe_allow_html=True)
+if not st.session_state.show_form:
+    head_right.button("Request help", key="open_form", on_click=open_form, width="stretch")
+
+if st.session_state.msg:
+    st.success(st.session_state.msg)
+    st.session_state.msg = ""
+
+if st.session_state.show_form:
+    with st.container(border=True, key="card_form"):
+        form_left, form_right = st.columns([6, 1])
+        form_left.markdown('<div class="card-title">Request help</div>', unsafe_allow_html=True)
+        form_right.button("Close", key="close_form", on_click=close_form)
+
+        st.markdown("**Speak your request (optional)**")
+        lang_name = st.selectbox("Speak in", list(LANGS.keys()), key="lang_name")
+        spoken = speech_to_text(
+            start_prompt="Start speaking", stop_prompt="Stop", just_once=True,
+            language=LANGS[lang_name], key="stt",
         )
-        st.success(f"Request added. Priority score: {score} | Trust: {trust}")
+        if spoken:
+            d = extract_details(spoken)
+            st.session_state["need"] = spoken
+            st.session_state["heard"] = spoken
+            if d["people"]:
+                st.session_state["people"] = d["people"]
+            if d["elderly"]:
+                st.session_state["elderly"] = True
+            if d["children"]:
+                st.session_state["children"] = True
+            if d["medical"]:
+                st.session_state["medical"] = True
+            if d["water"]:
+                st.session_state["water"] = d["water"]
+        if st.session_state["heard"]:
+            st.caption(f"Heard: {st.session_state['heard']}")
+
+        st.markdown("**Or fill the form**")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.selectbox("Location", list(AREAS[area].keys()), key=f"place_{area}")
+            st.text_area("What is happening?", key="need", placeholder="Describe what is happening")
+            uploaded = st.file_uploader("Attach a photo (optional)", type=["jpg", "jpeg", "png"],
+                                        key=f"photo_{st.session_state.photo_n}")
+            if uploaded is not None:
+                st.image(uploaded, caption="Attached photo", width=200)
+        with col2:
+            st.number_input("People in danger", 1, 50, key="people")
+            st.checkbox("Elderly present", key="elderly")
+            st.checkbox("Children present", key="children")
+            st.checkbox("Medical emergency", key="medical")
+            st.selectbox("Water level", list(WATER_POINTS.keys()), key="water")
+            st.slider("Waiting for help (hours)", 0, 24, key="hours")
+        st.button("Submit request", key="submit", type="primary", on_click=submit_request)
 
 area_requests = [r for r in st.session_state.requests if r["area"] == area]
 rows = [{**r, "color": pick_color(r["score"], r["trust"])} for r in area_requests]
 df = pd.DataFrame(rows)
+street_mode = area == "Mohali (street level)"
 
-st.subheader("Live request map" + (" (street level)" if area == "Mohali (street level)" else ""))
-if area == "Mohali (street level)":
-    st.map(df, latitude="lat", longitude="lon", color="color", size=80, zoom=14)
+
+def kpi_card(label, value, sub, color):
+    return (f'<div class="kpi"><div class="kpi-label">{label}</div>'
+            f'<div class="kpi-value" style="color:{color}">{value}</div>'
+            f'<div class="kpi-sub">{sub}</div></div>')
+
+
+def request_item(r):
+    color = pick_color(r["score"], r["trust"])
+    return (f'<div class="item" style="border-left:5px solid {color}">'
+            f'<div class="item-title">{html.escape(r["place"])}'
+            f'<span class="pill" style="background:{color}">{r["score"]}</span></div>'
+            f'<div class="item-sub">{html.escape(r["need"] or "No description")}</div></div>')
+
+
+def show_map(height):
+    st.markdown('<div class="card-title">Live request map'
+                + (" (street level)" if street_mode else "") + "</div>", unsafe_allow_html=True)
+    if street_mode:
+        st.map(df, latitude="lat", longitude="lon", color="color", size=80, zoom=14, height=height)
+    else:
+        st.map(df, latitude="lat", longitude="lon", color="color", size=4000, height=height)
+    st.caption("Red = urgent, orange = medium, green = low, grey = likely fake (needs human review)")
+
+
+def show_plan():
+    with st.container(border=True, key="card_plan"):
+        st.markdown('<div class="card-title">Rescue plan</div>', unsafe_allow_html=True)
+        if st.button("Make rescue plan", key="plan_btn", type="primary"):
+            st.session_state.plan = make_plan(area_requests)
+            st.session_state.plan_area = area
+        plan = st.session_state.get("plan")
+        if plan and st.session_state.get("plan_area") == area:
+            first = plan[0]
+            st.success(
+                f"First action: send {first['Send']} from {first['From']} to {first['To']} "
+                f"(about {first['ETA (min)']} min). Full plan below."
+            )
+            st.dataframe(pd.DataFrame(plan), width="stretch", hide_index=True)
+            st.caption("Estimates only: straight-line distance x 1.3 at 40 km/h. Real flood routes can be slower. "
+                       "A human officer approves the final plan.")
+        else:
+            st.caption("Click the button to get an ordered list of which team to send first.")
+
+
+def show_requests_table():
+    with st.container(border=True, key="card_table"):
+        st.markdown('<div class="card-title">Requests, most urgent first</div>', unsafe_allow_html=True)
+        st.dataframe(
+            df.sort_values("score", ascending=False)[["place", "need", "score", "trust", "flags", "why"]],
+            width="stretch", hide_index=True,
+        )
+
+
+def show_risk():
+    with st.container(border=True, key="card_risk"):
+        st.markdown('<div class="card-title">Predict next risk zones (next 6 hours)</div>', unsafe_allow_html=True)
+        demo_rain = st.checkbox("Demo mode: simulate heavy rain (for the presentation)", key="demo_rain")
+        if st.button("Check rain forecast", key="forecast_btn", type="primary"):
+            st.session_state.forecast = build_forecast(demo_rain)
+        fc = st.session_state.get("forecast")
+        if fc:
+            fdf = pd.DataFrame(fc["rows"])
+            st.caption(fc["source"])
+            st.map(fdf, latitude="lat", longitude="lon", color="color", size=6000, height=380)
+            st.dataframe(
+                fdf.sort_values("Risk score", ascending=False)[
+                    ["Place", "Past 24h rain (mm)", "Next 6h rain (mm)", "Risk score", "Risk level", "Why"]],
+                width="stretch", hide_index=True,
+            )
+            top_row = fdf.sort_values("Risk score", ascending=False).iloc[0]
+            st.warning(
+                f"Highest risk in the next 6 hours: {top_row['Place']} ({top_row['Risk level']}, "
+                f"score {top_row['Risk score']}). Consider moving boats and relief supplies there now."
+            )
+            st.caption("Estimate from the rain forecast plus sample terrain assumptions. It is not a full flood model.")
+        else:
+            st.caption("Click the button to see which places may be in danger in the next 6 hours.")
+
+
+if page == "Dashboard":
+    total = len(area_requests)
+    urgent = len([r for r in area_requests if r["score"] >= 70 and r["trust"] != "Likely fake"])
+    flagged = len([r for r in area_requests if r["trust"] not in ("Likely genuine",)])
+    k1, k2, k3, k4 = st.columns(4)
+    k1.markdown(kpi_card("Total requests", total, "in this area", "#12284c"), unsafe_allow_html=True)
+    k2.markdown(kpi_card("Urgent now", urgent, "priority score 70 or more", "#e63946"), unsafe_allow_html=True)
+    k3.markdown(kpi_card("Flagged reports", flagged, "need human review", "#f4a261"), unsafe_allow_html=True)
+    k4.markdown(kpi_card("Teams ready", len(TEAMS), "boats, medical, relief", "#2a9d8f"), unsafe_allow_html=True)
+    st.write("")
+    map_col, list_col = st.columns([2, 1])
+    with map_col:
+        with st.container(border=True, key="card_map"):
+            show_map(360)
+    with list_col:
+        with st.container(border=True, key="card_urgent"):
+            st.markdown('<div class="card-title">Most urgent now</div>', unsafe_allow_html=True)
+            top = sorted([r for r in area_requests if r["trust"] != "Likely fake"],
+                         key=lambda r: r["score"], reverse=True)[:5]
+            st.markdown("".join(request_item(r) for r in top) or "No requests yet.", unsafe_allow_html=True)
+    show_plan()
+    show_requests_table()
+elif page == "Control room":
+    show_plan()
+elif page == "Risk zones":
+    show_risk()
 else:
-    st.map(df, latitude="lat", longitude="lon", color="color", size=4000)
-st.caption("Red = urgent, Orange = medium, Green = low, Grey = likely fake (needs human review)")
-
-st.subheader("Control room")
-if "plan" not in st.session_state:
-    st.session_state.plan = None
-if st.button("Make rescue plan", key="plan_btn"):
-    st.session_state.plan = make_plan(area_requests)
-if st.session_state.plan:
-    first = st.session_state.plan[0]
-    st.success(
-        f"First action: send {first['Send']} from {first['From']} to {first['To']} "
-        f"(about {first['ETA (min)']} min). Full plan below."
-    )
-    st.dataframe(pd.DataFrame(st.session_state.plan), width="stretch", hide_index=True)
-    st.caption("Estimates only: straight-line distance x 1.3 at 40 km/h. Real flood routes can be slower. A human officer approves the final plan.")
-
-st.subheader("Predict next risk zones (next 6 hours)")
-demo_rain = st.checkbox("Demo mode: simulate heavy rain (for the presentation)", key="demo_rain")
-if st.button("Check rain forecast", key="forecast_btn"):
-    st.session_state.forecast = build_forecast(demo_rain)
-fc = st.session_state.get("forecast")
-if fc:
-    fdf = pd.DataFrame(fc["rows"])
-    st.caption(fc["source"])
-    st.map(fdf, latitude="lat", longitude="lon", color="color", size=6000)
-    st.dataframe(
-        fdf.sort_values("Risk score", ascending=False)[
-            ["Place", "Past 24h rain (mm)", "Next 6h rain (mm)", "Risk score", "Risk level", "Why"]],
-        width="stretch", hide_index=True,
-    )
-    top_row = fdf.sort_values("Risk score", ascending=False).iloc[0]
-    st.warning(
-        f"Highest risk in the next 6 hours: {top_row['Place']} ({top_row['Risk level']}, score {top_row['Risk score']}). "
-        "Consider moving boats and relief supplies there now."
-    )
-    st.caption("Estimate from the rain forecast plus sample terrain assumptions. It is not a full flood model.")
-
-st.subheader("Requests, most urgent first")
-st.dataframe(
-    df.sort_values("score", ascending=False)[["place", "need", "score", "trust", "flags", "why"]],
-    width="stretch",
-)
+    show_requests_table()
+    
