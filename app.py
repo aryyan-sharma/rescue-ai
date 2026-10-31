@@ -2,8 +2,9 @@ import io
 import re
 import math
 import difflib
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
+import requests
 import streamlit as st
 import pandas as pd
 from PIL import Image
@@ -70,6 +71,71 @@ def make_plan(requests):
              "ETA (min)": round(minutes)}
         )
     return plan
+
+
+# Sample assumption (0-20): how exposed each place is to flooding. A real version would use elevation and river data.
+TERRAIN_RISK = {"Ludhiana": 15, "Jalandhar": 15, "Patiala": 10, "Amritsar": 10, "Ferozepur": 20, "Mohali": 10}
+
+# Used in demo mode, and when the live forecast cannot be reached: (rain in past 24h, expected rain in next 6h) in mm
+DEMO_RAIN = {
+    "Ludhiana": (62, 28), "Jalandhar": (48, 22), "Patiala": (35, 14),
+    "Amritsar": (20, 6), "Ferozepur": (70, 35), "Mohali": (15, 3),
+}
+
+
+def fetch_rain(lat, lon):
+    """Free weather forecast (Open-Meteo, no key needed). Returns (past 24h mm, next 6h mm)."""
+    params = {"latitude": lat, "longitude": lon, "hourly": "precipitation",
+              "past_days": 1, "forecast_days": 2, "timezone": "auto"}
+    data = requests.get("https://api.open-meteo.com/v1/forecast", params=params, timeout=6).json()
+    times = data["hourly"]["time"]
+    rain = [x or 0 for x in data["hourly"]["precipitation"]]
+    local_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=data.get("utc_offset_seconds", 0))
+    key = local_now.strftime("%Y-%m-%dT%H:00")
+    idx = times.index(key) if key in times else 24 + local_now.hour
+    past24 = sum(rain[max(0, idx - 24):idx])
+    next6 = sum(rain[idx:idx + 6])
+    return round(past24, 1), round(next6, 1)
+
+
+def calc_risk(past24, next6, terrain):
+    pts_next = min(next6 / 20, 1) * 50
+    pts_past = min(past24 / 50, 1) * 30
+    total = round(pts_next + pts_past + terrain)
+    if total >= 60:
+        level = "High"
+    elif total >= 30:
+        level = "Medium"
+    else:
+        level = "Low"
+    why = f"coming rain +{round(pts_next)}, recent rain +{round(pts_past)}, terrain +{terrain}"
+    return total, level, why
+
+
+def build_forecast(demo):
+    rows = []
+    live_ok = True
+    for place, (lat, lon) in CITIES.items():
+        if demo:
+            past24, next6 = DEMO_RAIN[place]
+        else:
+            try:
+                past24, next6 = fetch_rain(lat, lon)
+            except Exception:
+                live_ok = False
+                past24, next6 = DEMO_RAIN[place]
+        total, level, why = calc_risk(past24, next6, TERRAIN_RISK[place])
+        color = {"High": "#e63946", "Medium": "#f4a261", "Low": "#2a9d8f"}[level]
+        rows.append({"Place": place, "Past 24h rain (mm)": past24, "Next 6h rain (mm)": next6,
+                     "Risk score": total, "Risk level": level, "Why": why,
+                     "lat": lat, "lon": lon, "color": color})
+    if demo:
+        source = "DEMO MODE: simulated heavy rain (not real weather)."
+    elif live_ok:
+        source = "Live rain forecast from Open-Meteo (free weather service)."
+    else:
+        source = "Live forecast could not be reached, so sample data is shown."
+    return {"rows": rows, "source": source}
 
 
 LANGS = {"Hindi / Hinglish": "hi-IN", "English": "en-IN", "Punjabi": "pa-IN"}
@@ -292,6 +358,27 @@ if st.session_state.plan:
     )
     st.dataframe(pd.DataFrame(st.session_state.plan), width="stretch", hide_index=True)
     st.caption("Estimates only: straight-line distance x 1.3 at 40 km/h. Real flood routes can be slower. A human officer approves the final plan.")
+
+st.subheader("Predict next risk zones (next 6 hours)")
+demo_rain = st.checkbox("Demo mode: simulate heavy rain (for the presentation)", key="demo_rain")
+if st.button("Check rain forecast", key="forecast_btn"):
+    st.session_state.forecast = build_forecast(demo_rain)
+fc = st.session_state.get("forecast")
+if fc:
+    fdf = pd.DataFrame(fc["rows"])
+    st.caption(fc["source"])
+    st.map(fdf, latitude="lat", longitude="lon", color="color", size=6000)
+    st.dataframe(
+        fdf.sort_values("Risk score", ascending=False)[
+            ["Place", "Past 24h rain (mm)", "Next 6h rain (mm)", "Risk score", "Risk level", "Why"]],
+        width="stretch", hide_index=True,
+    )
+    top_row = fdf.sort_values("Risk score", ascending=False).iloc[0]
+    st.warning(
+        f"Highest risk in the next 6 hours: {top_row['Place']} ({top_row['Risk level']}, score {top_row['Risk score']}). "
+        "Consider moving boats and relief supplies there now."
+    )
+    st.caption("Estimate from the rain forecast plus sample terrain assumptions. It is not a full flood model.")
 
 st.subheader("Requests, most urgent first")
 st.dataframe(
