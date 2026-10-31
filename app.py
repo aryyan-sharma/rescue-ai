@@ -23,6 +23,16 @@ CITIES = {
     "Mohali": (30.7046, 76.7179),
 }
 
+# Sample street-level spots near Mohali. These are placeholder positions: replace with real streets and colonies.
+STREETS = {
+    "Sample street 1": (30.7090, 76.7110),
+    "Sample street 2": (30.6990, 76.7220),
+    "Sample street 3": (30.7150, 76.7240),
+    "Sample street 4": (30.6930, 76.7090),
+    "Sample street 5": (30.7020, 76.7330),
+}
+AREAS = {"Punjab (cities)": CITIES, "Mohali (street level)": STREETS}
+
 WATER_POINTS = {"Ankle level": 0, "Knee level": 8, "Waist level": 18, "Roof / above": 25}
 SPAM_WORDS = ["free", "click", "lottery", "win", "offer", "prize", "subscribe"]
 
@@ -33,6 +43,10 @@ TEAMS = [
     {"name": "Medical Team 1", "type": "Medical", "base": "Patiala", "lat": 30.3398, "lon": 76.3869},
     {"name": "Medical Team 2", "type": "Medical", "base": "Amritsar", "lat": 31.6340, "lon": 74.8723},
     {"name": "Relief Truck 1", "type": "Relief", "base": "Jalandhar", "lat": 31.3260, "lon": 75.5762},
+    {"name": "Local Boat A", "type": "Boat", "base": "Mohali depot (sample)", "lat": 30.7120, "lon": 76.7060},
+    {"name": "Local Boat B", "type": "Boat", "base": "Mohali depot (sample)", "lat": 30.6960, "lon": 76.7300},
+    {"name": "Local Medical Team", "type": "Medical", "base": "Mohali hospital (sample)", "lat": 30.7000, "lon": 76.7150},
+    {"name": "Local Relief Truck", "type": "Relief", "base": "Mohali depot (sample)", "lat": 30.7080, "lon": 76.7200},
 ]
 
 
@@ -60,7 +74,7 @@ def make_plan(requests):
         else:
             wanted = "Relief"
         options = [t for t in free if t["type"] == wanted] or free
-        lat, lon = CITIES[r["place"]]
+        lat, lon = r["lat"], r["lon"]
         team = min(options, key=lambda t: distance_km(t["lat"], t["lon"], lat, lon))
         km = distance_km(team["lat"], team["lon"], lat, lon) * 1.3
         minutes = 5 + km / 40 * 60
@@ -271,15 +285,30 @@ def pick_color(score, trust):
     return "#2a9d8f"
 
 
+def make_seed(area, locs, items):
+    out = []
+    for place, need, score, medical in items:
+        lat, lon = locs[place]
+        out.append({"area": area, "place": place, "need": need, "lat": lat, "lon": lon, "score": score,
+                    "why": "sample", "trust": "Likely genuine", "flags": "sample", "bits": None, "medical": medical})
+    return out
+
+
 if "requests" not in st.session_state:
-    st.session_state.requests = [
-        {"place": "Ludhiana", "need": "Family trapped, water rising", "score": 92, "why": "sample", "trust": "Likely genuine", "flags": "sample", "bits": None},
-        {"place": "Patiala", "need": "Pregnant woman needs medical help", "score": 88, "why": "sample", "trust": "Likely genuine", "flags": "sample", "bits": None, "medical": True},
-        {"place": "Jalandhar", "need": "Village cut off, needs food", "score": 64, "why": "sample", "trust": "Likely genuine", "flags": "sample", "bits": None},
-        {"place": "Amritsar", "need": "Family safe on roof", "score": 45, "why": "sample", "trust": "Likely genuine", "flags": "sample", "bits": None},
-        {"place": "Ferozepur", "need": "Cattle and crops at risk", "score": 22, "why": "sample", "trust": "Likely genuine", "flags": "sample", "bits": None},
-        {"place": "Mohali", "need": "Road blocked, no danger", "score": 15, "why": "sample", "trust": "Likely genuine", "flags": "sample", "bits": None},
-    ]
+    st.session_state.requests = make_seed("Punjab (cities)", CITIES, [
+        ("Ludhiana", "Family trapped, water rising", 92, False),
+        ("Patiala", "Pregnant woman needs medical help", 88, True),
+        ("Jalandhar", "Village cut off, needs food", 64, False),
+        ("Amritsar", "Family safe on roof", 45, False),
+        ("Ferozepur", "Cattle and crops at risk", 22, False),
+        ("Mohali", "Road blocked, no danger", 15, False),
+    ]) + make_seed("Mohali (street level)", STREETS, [
+        ("Sample street 1", "Family trapped, water rising", 92, False),
+        ("Sample street 2", "Pregnant woman needs medical help", 88, True),
+        ("Sample street 3", "Lane cut off, needs food", 64, False),
+        ("Sample street 4", "Family safe on roof", 45, False),
+        ("Sample street 5", "Road blocked, no danger", 15, False),
+    ])
 
 st.session_state.setdefault("need", "Water entering house")
 st.session_state.setdefault("people", 3)
@@ -314,7 +343,9 @@ with st.sidebar:
         st.caption(f"Heard: {st.session_state['heard']}")
     st.divider()
     st.header("New help request")
-    place = st.selectbox("Location", list(CITIES.keys()))
+    area = st.radio("Map area", list(AREAS.keys()), key="area")
+    LOCATIONS = AREAS[area]
+    place = st.selectbox("Location", list(LOCATIONS.keys()))
     need = st.text_area("What is happening?", key="need")
     uploaded = st.file_uploader("Attach a photo (optional)", type=["jpg", "jpeg", "png"])
     if uploaded is not None:
@@ -329,27 +360,29 @@ with st.sidebar:
         score, why = calc_score(people, elderly, children, medical, water, hours)
         photo = analyze_photo(uploaded)
         trust, flags = calc_trust(place, need, photo, st.session_state.requests)
+        lat0, lon0 = LOCATIONS[place]
         st.session_state.requests.append(
-            {"place": place, "need": need, "score": score, "why": why, "trust": trust,
+            {"area": area, "lat": lat0, "lon": lon0, "place": place, "need": need, "score": score, "why": why, "trust": trust,
              "flags": flags, "bits": photo["bits"] if photo else None, "medical": medical}
         )
         st.success(f"Request added. Priority score: {score} | Trust: {trust}")
 
-rows = []
-for r in st.session_state.requests:
-    lat, lon = CITIES[r["place"]]
-    rows.append({**r, "lat": lat, "lon": lon, "color": pick_color(r["score"], r["trust"])})
+area_requests = [r for r in st.session_state.requests if r["area"] == area]
+rows = [{**r, "color": pick_color(r["score"], r["trust"])} for r in area_requests]
 df = pd.DataFrame(rows)
 
-st.subheader("Live request map")
-st.map(df, latitude="lat", longitude="lon", color="color", size=4000)
+st.subheader("Live request map" + (" (street level)" if area == "Mohali (street level)" else ""))
+if area == "Mohali (street level)":
+    st.map(df, latitude="lat", longitude="lon", color="color", size=80, zoom=14)
+else:
+    st.map(df, latitude="lat", longitude="lon", color="color", size=4000)
 st.caption("Red = urgent, Orange = medium, Green = low, Grey = likely fake (needs human review)")
 
 st.subheader("Control room")
 if "plan" not in st.session_state:
     st.session_state.plan = None
 if st.button("Make rescue plan", key="plan_btn"):
-    st.session_state.plan = make_plan(st.session_state.requests)
+    st.session_state.plan = make_plan(area_requests)
 if st.session_state.plan:
     first = st.session_state.plan[0]
     st.success(
