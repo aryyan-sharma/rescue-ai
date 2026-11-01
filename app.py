@@ -570,3 +570,4 @@ elif page == "Risk zones":
     show_risk()
 else:
     show_requests_table()
+    
